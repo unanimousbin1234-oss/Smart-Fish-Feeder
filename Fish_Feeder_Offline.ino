@@ -2,13 +2,16 @@
 #include <WebServer.h>
 #include <AccelStepper.h>
 
+// --- Wi-Fi Credentials ---
+const char* ssid     = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
 // --- Stepper Configuration ---
 const int STEP_PIN = 18;
 const int DIR_PIN  = 19;
 AccelStepper stepper(AccelStepper::DRIVER, STEP_PIN, DIR_PIN);
 
-// Calibration: 270mg = 0.27g per full revolution (200 steps)
-const float GRAMS_PER_TURN = 0.27;
+const float GRAMS_PER_TURN = 6.0;
 const int STEPS_PER_REV = 200;
 
 WebServer server(80);
@@ -20,13 +23,13 @@ unsigned long lastFeedTime = 0;
 float scheduledGramsPerFeed = 0.0;
 float scheduledIntervalHours = 0.0;
 
-// --- Web UI (Stored 100% Offline in Flash Memory) ---
+// --- Web UI (HTML, CSS, JS) ---
 const char MAIN_PAGE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Smart Multi-Species Feeder</title>
+  <title>Smart Tank Multi-Species Feeder</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #f8fafc; padding: 16px; margin: 0; }
     .card { background: #1e293b; border-radius: 12px; padding: 20px; max-width: 460px; margin: 0 auto 16px auto; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
@@ -50,7 +53,7 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
 <body>
   <div class="card">
     <div id="scheduleBanner" class="status-banner status-idle">
-      Status: Feeder Idle (No Schedule)
+      Status: No Active Schedule
     </div>
 
     <h2>🐠 Tank Inhabitants</h2>
@@ -113,13 +116,12 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
   <div class="card">
     <h2>⚡ Manual Dispense</h2>
     <label>Portion to Dispense (Grams)</label>
-    <input type="number" id="manualGrams" class="full-width" value="0.27" step="0.01" min="0.01">
+    <input type="number" id="manualGrams" class="full-width" value="0.5" step="0.05" min="0.05">
     <button class="btn-feed" onclick="manualFeed()">Feed Now</button>
   </div>
 
   <script>
     let calculatedPerFeedGrams = 0;
-    const GRAMS_PER_REV = 0.27;
 
     function recalculate() {
       let totalDaily = 0;
@@ -134,18 +136,18 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
 
       const freq = parseInt(document.getElementById('frequency').value);
       calculatedPerFeedGrams = freq > 0 ? (totalDaily / freq) : 0;
-      const turns = (calculatedPerFeedGrams / GRAMS_PER_REV).toFixed(2);
+      const turns = (calculatedPerFeedGrams / 6.0).toFixed(2);
 
       document.getElementById('manualGrams').value = calculatedPerFeedGrams.toFixed(2);
       document.getElementById('calcBreakdown').innerHTML = 
         `<strong>Total Fish:</strong> ${totalFish}<br>` +
         `<strong>Combined Daily Food:</strong> ${totalDaily.toFixed(2)}g<br>` +
-        `<strong>Portion per Serving:</strong> ${calculatedPerFeedGrams.toFixed(2)}g (~${turns} turns)`;
+        `<strong>Food per Serving:</strong> ${calculatedPerFeedGrams.toFixed(2)}g (~${turns} turns)`;
     }
 
     function activateSchedule() {
       if (calculatedPerFeedGrams <= 0) {
-        alert("Please enter at least one fish.");
+        alert("Please specify at least one fish.");
         return;
       }
       const freq = parseInt(document.getElementById('frequency').value);
@@ -196,19 +198,17 @@ const char MAIN_PAGE[] PROGMEM = R"rawliteral(
 void dispenseGrams(float grams) {
   if (grams <= 0) return;
   long steps = (long)((grams / GRAMS_PER_TURN) * STEPS_PER_REV);
+  
+  // Guard minimum micro-turn
   if (steps < 1) steps = 1;
-
-  Serial.print("Dispensing: ");
-  Serial.print(grams, 3);
-  Serial.print("g (Steps: ");
-  Serial.print(steps);
-  Serial.println(")");
 
   stepper.move(steps);
   while (stepper.distanceToGo() != 0) {
     stepper.run();
   }
 }
+
+//Edited version for github 123456
 
 // --- Route Handlers ---
 void handleRoot() {
@@ -232,7 +232,7 @@ void handleSetSchedule() {
     
     intervalMillis = (unsigned long)(scheduledIntervalHours * 3600 * 1000UL);
     autoFeedEnabled = true;
-    lastFeedTime = millis();
+    lastFeedTime = millis(); // Start timing interval from now
 
     server.send(200, "text/plain", "Schedule Activated: " + String(scheduledGramsPerFeed, 2) + "g every " + String(scheduledIntervalHours, 0) + " hours.");
   } else {
@@ -249,25 +249,20 @@ void handleCancelSchedule() {
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
 
   stepper.setMaxSpeed(600.0);
   stepper.setAcceleration(400.0);
 
-  // 1. Force WiFi to Access Point mode only
-  WiFi.mode(WIFI_AP);
-  
-  // 2. Create the hotspot network (SSID, Password)
-  WiFi.softAP("SmartFishFeeder", "12345678");
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
 
-  Serial.println("========================================");
-  Serial.println("   OFFLINE ACCESS POINT CREATED         ");
-  Serial.println("========================================");
-  Serial.println("1. Connect your phone to: SmartFishFeeder");
-  Serial.println("2. Password:              12345678");
-  Serial.print(  "3. Open in Browser:       http://");
-  Serial.println(WiFi.softAPIP()); // Always 192.168.4.1
-  Serial.println("========================================");
+  Serial.println("\nWi-Fi Connected!");
+  Serial.print("Access App at: http://");
+  Serial.println(WiFi.localIP());
 
   server.on("/", HTTP_GET, handleRoot);
   server.on("/dispense", HTTP_GET, handleDispense);
@@ -280,7 +275,7 @@ void setup() {
 void loop() {
   server.handleClient();
 
-  // Schedule timer check
+  // --- Automatic Timer Trigger ---
   if (autoFeedEnabled && (millis() - lastFeedTime >= intervalMillis)) {
     lastFeedTime = millis();
     dispenseGrams(scheduledGramsPerFeed);
